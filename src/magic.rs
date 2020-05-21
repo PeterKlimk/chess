@@ -199,7 +199,7 @@ impl MagicCache {
         let y = pos / 8;
 
         let (mut x2, mut y2) = (x, y);
-        while x2 < 6 && y2 < 6 {
+        while x2 < 7 && y2 < 7 {
             x2 += 1; y2 += 1;
             let new_pos = y2 * 8 + x2;
             result = result.add_pos(new_pos);
@@ -207,7 +207,7 @@ impl MagicCache {
         }
 
         let (mut x2, mut y2) = (x, y);
-        while x2 < 6 && y2 > 1 {
+        while x2 < 7 && y2 > 0 {
             x2 += 1; y2 -= 1;
             let new_pos = y2 * 8 + x2;
             result = result.add_pos(new_pos);
@@ -215,7 +215,7 @@ impl MagicCache {
         }
 
         let (mut x2, mut y2) = (x, y);
-        while x2 > 1 && y2 > 1 {
+        while x2 > 0 && y2 > 0 {
             x2 -= 1; y2 -= 1;
             let new_pos = y2 * 8 + x2;
             result = result.add_pos(new_pos);
@@ -223,7 +223,7 @@ impl MagicCache {
         }
 
         let (mut x2, mut y2) = (x, y);
-        while x2 > 1 && y2 < 6 {
+        while x2 > 0 && y2 < 7 {
             x2 -= 1; y2 += 1;
             let new_pos = y2 * 8 + x2;
             result = result.add_pos(new_pos);
