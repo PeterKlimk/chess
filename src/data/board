@@ -1,0 +1,21 @@
+
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800">
+<style>
+.piece { 
+    font-size: 80px; 
+}
+
+.black {
+    fill: black;
+}
+
+.white {
+    fill: white;
+}
+</style>
+<rect fill="#D18B47" width="800" height="800"/>
+<g transform="scale(100, 100)">
+<path fill="#FFCE9E" d="M0,0H8v1H0zm0,2H8v1H0zm0
+2H8v1H0zm0,2H8v1H0zM1,0V8h1V0zm2,0V8h1V0zm2
+0V8h1V0zm2,0V8h1V0z"/>
+</g>
