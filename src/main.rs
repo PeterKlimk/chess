@@ -1,3 +1,11 @@
+#![feature(proc_macro_hygiene)]
+#![feature(decl_macro)]
+
+#[macro_use] extern crate rocket;
+extern crate lazy_static;
+extern crate rand;
+
+use std::sync::{MutexGuard, Mutex};
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 use std::fmt;
 use std::char;
@@ -10,10 +18,12 @@ use lazy_static::lazy_static;
 const PLAYER_COUNT: usize = 2;
 const PIECE_TYPE_COUNT: usize = 6;
 
-mod render;
 mod magic;
 
 use magic::MagicCache;
+
+use rocket::State;
+use rocket_contrib::serve::StaticFiles;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]
@@ -150,28 +160,28 @@ impl Iterator for IndexIterator {
 }
 
 impl BitBoard {
-    fn new_empty() -> Self {
+    fn new() -> Self {
         Self(0)
     }
 
-    fn empty_at (&self, pos: u32) -> bool {
-        (*self & Self::from_pos(pos)).is_empty()
+    fn empty_at (self, pos: u32) -> bool {
+        (self & Self::from_pos(pos)).is_empty()
     }
 
-    fn add_pos (&self, pos: u32) -> Self {
-        *self | Self::from_pos(pos)
+    fn add_pos (self, pos: u32) -> Self {
+        self | Self::from_pos(pos)
     }
 
-    fn clear_pos(&self, pos: u32) -> Self {
-        *self & Self::from_pos(pos).invert()
+    fn clear_pos(self, pos: u32) -> Self {
+        self & Self::from_pos(pos).invert()
+    }
+
+    fn collides(self, other: BitBoard) -> bool {
+        (self.0 & other.0) != 0
     }
 
     fn is_empty (&self) -> bool {
         self.0 == 0
-    }
-
-    fn not_empty(&self) -> bool {
-        self.0 != 0
     }
 
     fn count(&self) -> u32 {
@@ -236,6 +246,11 @@ pub struct ChessState {
     pub move_rule: u32,
 }
 
+
+struct ExtraState {
+
+}
+
 struct Cache {
     knight_moves: Vec<BitBoard>,
     king_moves: Vec<BitBoard>,
@@ -248,7 +263,7 @@ impl Cache {
             let x = pos % 8;
             let y = pos / 8;
             
-            let mut bb = BitBoard::new_empty();
+            let mut bb = BitBoard::new();
 
             if x >= 2 {
                 if y < 7 { bb = bb.add_pos((y + 1) * 8 + (x - 2)); }
@@ -278,7 +293,7 @@ impl Cache {
             let x = pos % 8;
             let y = pos / 8;
 
-            let mut bb = BitBoard::new_empty();
+            let mut bb = BitBoard::new();
             if x > 0 {
                 bb = bb.add_pos (pos - 1);
 
@@ -337,8 +352,8 @@ impl ChessState {
     }
 
     fn from_fen (fen: &str) -> Self {
-        let mut player_bb = [BitBoard::new_empty(); PLAYER_COUNT];
-        let mut piece_bb = [BitBoard::new_empty(); PIECE_TYPE_COUNT];        
+        let mut player_bb = [BitBoard::new(); PLAYER_COUNT];
+        let mut piece_bb = [BitBoard::new(); PIECE_TYPE_COUNT];        
 
         let mut chars = fen.chars();
         let mut i = 0;
@@ -437,11 +452,113 @@ impl ChessState {
     fn legal_moves (&self) -> Vec<Move> {
         let mut moves = Vec::new();
 
-        let targetable = self.player_bb[self.active as usize].invert();
         let occupied = self.player_bb[0] | self.player_bb[1];
         let player = self.player_bb[self.active as usize];
         let enemy = self.player_bb[self.active.opposite() as usize];
+
+        let our_king = player & self.piece_bb[Piece::King as usize];
+        let our_king_pos = our_king.solo_pos();
         
+        let occupied_no_king = occupied & our_king.invert();
+
+        let mut enemy_attacking = BitBoard::new();
+        let mut king_attacks = 0;
+        let mut block = BitBoard::new();
+
+        let mut targetable = self.player_bb[self.active as usize].invert();
+        let mut movable = occupied.invert();
+        let mut attackable = enemy;
+
+        //ENEMY KNIGHTS
+        let bb = self.piece_bb[Piece::Knight as usize] & enemy;
+        for index in bb.get_indices() {
+            let possible = cache.knight_moves(index);
+            if possible.collides(our_king) { 
+                king_attacks += 1; 
+                block = BitBoard::from_pos(index); 
+            }
+            enemy_attacking |= possible;
+        }
+
+        //ENEMY BISHOPS
+        let bb = self.piece_bb[Piece::Bishop as usize] & enemy;
+        for index in bb.get_indices() {
+            let possible = magic_cache.bishop_moves(index, occupied_no_king);
+            if possible.collides(our_king) { 
+                king_attacks += 1; 
+                block = magic_cache.bishop_ray(index, our_king_pos);
+            }
+            enemy_attacking |= possible;
+        }
+
+        //ENEMY ROOKS
+        let bb = self.piece_bb[Piece::Rook as usize] & enemy;
+        for index in bb.get_indices() {
+            let possible = magic_cache.rook_moves(index, occupied_no_king);
+            if possible.collides(our_king) { 
+                king_attacks += 1; 
+                block = magic_cache.rook_ray(index, our_king_pos);
+            }
+            enemy_attacking |= possible;
+        }
+
+        //ENEMY QUEENS
+        let bb = self.piece_bb[Piece::Queen as usize] & enemy;
+        for index in bb.get_indices() {
+            let rook_possible = magic_cache.rook_moves(index, occupied_no_king);
+            let bishop_possible = magic_cache.bishop_moves(index, occupied_no_king);
+
+            if rook_possible.collides(our_king) { 
+                king_attacks += 1;
+                block = magic_cache.rook_ray(index, our_king_pos); 
+            }
+
+            else if bishop_possible.collides(our_king) {
+                king_attacks += 1;
+                block = magic_cache.bishop_ray(index, our_king_pos);
+            }
+
+            enemy_attacking |= rook_possible | bishop_possible;
+        }
+
+        //ENEMY PAWNS
+        let bb = self.piece_bb[Piece::Pawn as usize] & enemy;
+        for index in bb.get_indices() {
+            let x = index % 8;
+            let mut possible = BitBoard::new();
+            if x > 0 { possible = possible.add_pos(index + 7); }
+            if x < 7 { possible = possible.add_pos(index + 9); }
+
+            if possible.collides(our_king) { 
+                king_attacks += 1; 
+                block = BitBoard::from_pos(index);
+            }
+            enemy_attacking |= possible;
+        }
+
+        let bb = self.piece_bb[Piece::King as usize] & enemy;
+        let king_pos = bb.solo_pos();
+        let possible = cache.king_moves(king_pos);
+        enemy_attacking |= possible;
+
+        let safe_king = targetable & enemy_attacking.invert();
+
+        //KING MOVES
+        let possible = cache.king_moves(our_king_pos) & safe_king;
+        for target in possible.get_indices() {
+            moves.push(Move::new(Piece::King, our_king_pos, target));
+        }
+
+        //if the king is under attack twice, he the king must move
+        if king_attacks >= 2 { return moves; }
+
+        //if the king is under attack, other pieces must step in between or take
+        if king_attacks == 1 {
+            targetable = targetable & block;
+            movable = movable & block;
+            attackable = attackable & block;
+        }
+
         //KNIGHT MOVES
         let bb = self.piece_bb[Piece::Knight as usize] & player;
 
@@ -463,7 +580,6 @@ impl ChessState {
         };
 
         let bb = self.piece_bb[Piece::Pawn as usize] & player;
-
         for index in bb.get_indices() {
             let y = index / 8;
             let x = index % 8;
@@ -477,7 +593,7 @@ impl ChessState {
                         Color::Black => index - 8 - 1,
                     };
 
-                    if !enemy.empty_at(new_pos) {
+                    if !attackable.empty_at(new_pos) {
                         moves.push(Move::new(Piece::Pawn, index, new_pos));
                     }
                 }
@@ -489,7 +605,7 @@ impl ChessState {
                         Color::Black => index - 8 + 1,
                     };
 
-                    if !enemy.empty_at(new_pos) {
+                    if !attackable.empty_at(new_pos) {
                         moves.push(Move::new(Piece::Pawn, index, new_pos));
                     }
                 }
@@ -500,7 +616,7 @@ impl ChessState {
                 };
 
                 //move and double move
-                if occupied.empty_at(new_pos) {
+                if !movable.empty_at(new_pos) {
                     moves.push(Move::new(Piece::Pawn, index, new_pos));
 
                     if y == double_row {
@@ -509,7 +625,7 @@ impl ChessState {
                             Color::Black => index - 16,
                         };
 
-                        if occupied.empty_at(double_pos) {
+                        if !movable.empty_at(double_pos) {
                             moves.push(Move::new(Piece::Pawn, index, double_pos));
                         }
                     }
@@ -544,24 +660,13 @@ impl ChessState {
             }
         }
 
-        //KING MOVES
-        let bb = self.piece_bb[Piece::King as usize] & player;
-        let king_pos = bb.solo_pos();
-
-        let possible = cache.king_moves(king_pos) & targetable;
-        for target in possible.get_indices() {
-            moves.push(Move::new(Piece::King, king_pos, target));
-        }
-
         moves
     }
 
     fn apply_move (&mut self, action: Move) {
         self.player_bb[self.active.opposite() as usize] = self.player_bb[self.active.opposite() as usize].clear_pos(action.dest);
         for &piece in Piece::kinds() {
-            println!("{}", self.piece_bb[piece as usize].empty_at(action.dest));
             self.piece_bb[piece as usize] = self.piece_bb[piece as usize].clear_pos(action.dest);
-            println!("{}", self.piece_bb[piece as usize].empty_at(action.dest));
         }
 
         self.player_bb[self.active as usize] = self.player_bb[self.active as usize]
@@ -672,27 +777,41 @@ fn pos_to_algebra(pos: u32) -> String {
     algebra
 }
 
-fn main() {
-    let mut rng = rand::thread_rng();
+#[post("/move/<origin>/<dest>")]
+fn web_move(origin: String, dest: String, state: State<Mutex<ChessState>>) -> &str {
+    let mut current_state: MutexGuard<ChessState> = state.lock().unwrap();
 
-    let mut state = ChessState::default();
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
-    loop {
-        let moves = state.legal_moves();
-        for (i, action) in moves.iter().enumerate() {
-            println!("{}: {}", i, action);
+    let orig = origin.chars().collect::<Vec<_>>();
+    let dest = dest.chars().collect::<Vec<_>>();
+
+    let origin = algebra_to_pos(orig[0], orig[1]);
+    let dest = algebra_to_pos(dest[0], dest[1]);
+
+    let moves = current_state.legal_moves();
+    let mut moved = false;
+
+    for &action in &moves {
+        if origin == action.origin && dest == action.dest {
+            current_state.apply_move(action);
+            moved = true;
+            break;
         }
-
-        render::debug_svg(&state);
-
-        let input = lines.next().unwrap().unwrap();
-        let target_move = if input == "" {
-            rng.gen_range(0, moves.len())
-        } else {
-            input.parse::<usize>().unwrap()
-        };
-        
-        state.apply_move(moves[target_move]);
     }
+
+    println!("Valid #: {}", moves.len());
+    println!("Valid: {}", moved);
+
+    if moved {
+        "valid"
+    } else {
+        "invalid"
+    }
+}
+
+fn main() {
+    rocket::ignite()
+        .manage(Mutex::new(ChessState::default()))
+        .mount("/", routes![web_move])
+        .mount("/", StaticFiles::from("./src/web"))
+        .launch();
 }

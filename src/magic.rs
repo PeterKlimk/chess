@@ -32,6 +32,9 @@ pub struct MagicCache {
 
     pub rook_cache: Vec<Vec<BitBoard>>,
     pub bishop_cache: Vec<Vec<BitBoard>>,
+
+    pub rook_rays: Vec<BitBoard>,
+    pub bishop_rays: Vec<BitBoard>,
 }
 
 impl MagicCache {
@@ -49,6 +52,98 @@ impl MagicCache {
         let key = (masked.0 * MAGIC_BISHOPS[pos as usize]) >> (64 - bits);
 
         self.bishop_cache[pos as usize][key as usize]
+    }
+
+    pub fn rook_ray (&self, pos: u32, other: u32) -> BitBoard {
+        self.rook_rays[(pos * 64 + other) as usize]
+    }
+
+    pub fn bishop_ray (&self, pos: u32, other: u32) -> BitBoard {
+        self.bishop_rays[(pos * 64 + other) as usize]
+    }
+
+    fn gen_bishop_rays() -> Vec<BitBoard> {
+        let mut bishop_rays = vec![BitBoard::new(); 64*64];
+
+        for pos in 0..64 {
+            let (x, y) = (pos % 8, pos / 8);
+    
+            let mut bb = BitBoard::new();
+            let (mut x2, mut y2) = (x, y);
+            while x2 < 7 && y2 < 7 {
+                x2 += 1; y2 += 1;
+                let other = x2 + y2 * 8;
+                bb = bb.add_pos(other);
+                bishop_rays[(pos * 64 + other) as usize] = bb;
+            }
+    
+            let mut bb = BitBoard::new();
+            let (mut x2, mut y2) = (x, y);
+            while x2 < 7 && y2 > 0 {
+                x2 += 1; y2 -= 1;
+                let other = x2 + y2 * 8;
+                bb = bb.add_pos(other);
+                bishop_rays[(pos * 64 + other) as usize] = bb;
+            }
+    
+            let mut bb = BitBoard::new();
+            let (mut x2, mut y2) = (x, y);
+            while x2 > 0 && y2 > 0 {
+                x2 -= 1; y2 -= 1;
+                let other = x2 + y2 * 8;
+                bb = bb.add_pos(other);
+                bishop_rays[(pos * 64 + other) as usize] = bb;
+            }
+    
+            let mut bb = BitBoard::new();
+            let (mut x2, mut y2) = (x, y);
+            while x2 > 0 && y2 < 7 {
+                x2 -= 1; y2 += 1;
+                let other = x2 + y2 * 8;
+                bb = bb.add_pos(other);
+                bishop_rays[(pos * 64 + other) as usize] = bb;
+            }
+        }
+
+        bishop_rays
+    }
+
+    fn gen_rook_rays() -> Vec<BitBoard> {
+        let mut rook_rays = vec![BitBoard::new(); 64*64];
+
+        for pos in 0..64 {
+            let (x, y) = (pos % 8, pos / 8);
+
+            let mut bb = BitBoard::new();
+            for y2 in 0..y { 
+                let other = x + y2 * 8;
+                bb = bb.add_pos(other);
+                rook_rays[(pos * 64 + other) as usize] = bb;
+            }
+
+            let mut bb = BitBoard::new();
+            for y2 in (y+1)..8 { 
+                let other = x + y2 * 8;
+                bb = bb.add_pos(other);
+                rook_rays[(pos * 64 + other) as usize] = bb;
+            }
+
+            let mut bb = BitBoard::new();
+            for x2 in 0..x { 
+                let other = x2 + y * 8;
+                bb = bb.add_pos(other);
+                rook_rays[(pos * 64 + other) as usize] = bb;
+            }
+
+            let mut bb = BitBoard::new();
+            for x2 in (x+1)..8 { 
+                let other = x2 + y * 8;
+                bb = bb.add_pos(other);
+                rook_rays[(pos * 64 + other) as usize] = bb;
+            }
+        }
+
+        rook_rays
     }
 
     pub fn new() -> Self {
@@ -76,8 +171,8 @@ impl MagicCache {
             let rb = rook_bits[pos as usize];
             let bb = bishop_bits[pos as usize];
 
-            let mut crc = vec![BitBoard::new_empty(); 2usize.pow(rb)];
-            let mut cbc = vec![BitBoard::new_empty(); 2usize.pow(bb)];
+            let mut crc = vec![BitBoard::new(); 2usize.pow(rb)];
+            let mut cbc = vec![BitBoard::new(); 2usize.pow(bb)];
 
             let possible_rooks = Self::gen_rook(pos);
             let possible_bishops = Self::gen_bishop(pos);
@@ -105,11 +200,14 @@ impl MagicCache {
             bishop_cache,
             bishop_masks,
             bishop_bits,
+
+            rook_rays: Self::gen_rook_rays(),
+            bishop_rays: Self::gen_bishop_rays(), 
         }
     }
 
     pub fn rook_mask (pos: u32) -> BitBoard {
-        let mut bb = BitBoard::new_empty();
+        let mut bb = BitBoard::new();
         let (x, y) = (pos % 8, pos / 8);
 
         for y2 in 1..y { bb = bb.add_pos(x + y2 * 8); }
@@ -121,7 +219,7 @@ impl MagicCache {
     }
 
     pub fn bishop_mask (pos: u32) -> BitBoard {
-        let mut bb = BitBoard::new_empty();
+        let mut bb = BitBoard::new();
 
         let x = pos % 8;
         let y = pos / 8;
@@ -155,7 +253,7 @@ impl MagicCache {
 
     pub fn solve_rook (mask: BitBoard, pos: u32) -> BitBoard {
         let (x, y) = (pos % 8, pos / 8);
-        let mut result = BitBoard::new_empty();
+        let mut result = BitBoard::new();
 
         let mut x2 = x;
         while x2 < 7 {
@@ -193,7 +291,7 @@ impl MagicCache {
     }
 
     pub fn solve_bishop (mask: BitBoard, pos: u32) -> BitBoard {
-        let mut result = BitBoard::new_empty();
+        let mut result = BitBoard::new();
 
         let x = pos % 8;
         let y = pos / 8;
@@ -234,7 +332,7 @@ impl MagicCache {
     }
 
     pub fn gen_bishop (pos: u32) -> Vec<BitBoard> {
-        let mut perms = vec![BitBoard::new_empty()];
+        let mut perms = vec![BitBoard::new()];
 
         let x = pos % 8;
         let y = pos / 8;
@@ -267,7 +365,7 @@ impl MagicCache {
     }
 
     pub fn gen_rook (pos: u32) -> Vec<BitBoard> {
-        let mut perms = vec![BitBoard::new_empty()];
+        let mut perms = vec![BitBoard::new()];
         let (x, y) = (pos % 8, pos / 8);
 
         for y2 in 1..y {
